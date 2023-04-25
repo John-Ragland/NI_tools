@@ -88,7 +88,7 @@ def hilbert_mag(da, dim, **kwargs):
     
     return dac
 
-def calc_prop_times(NCCFs, peaks=peak_names_short):
+def calc_prop_times(NCCFs, peaks=peak_names_short, custom_window=None, dim='delay', date_dim='dates'):
     '''
     calculate propagation times for all specified peaks.
     Calculations are distributed and require chunked data.
@@ -100,18 +100,26 @@ def calc_prop_times(NCCFs, peaks=peak_names_short):
         Dataset of multiple NCCFs stacks. Should have dimensions ['date','delay']
     peaks : list
         list of strings specifying peak names. should be contained in peak_names defined above
-
+    custom_window : dictionary
+        mapping from peak name to slice. If supplied, then peaks is ignored
     Returns
     -------
     arrival_times : xr.Dataset
         estimated arrival times
     '''
 
-    template = xr.ones_like(NCCFs).isel({'delay':0}).expand_dims({'peak': peaks}, axis=0).drop_vars('delay')
-    prop_times = NCCFs.map_blocks(_calc_prop_times_chunk, args=[peaks], template=template)
+    template = xr.ones_like(NCCFs).isel({dim:0}).expand_dims({'peak': peaks}, axis=0).drop_vars(dim)
+    kwargs = {
+        'peak_names': peaks,
+        'custom_window': custom_window,
+        'dim': dim,
+        'date_dim': date_dim
+    }
+
+    prop_times = NCCFs.map_blocks(_calc_prop_times_chunk, kwargs=kwargs, template=template)
     return prop_times
 
-def _calc_prop_times_chunk(NCCFs, peak_names):
+def _calc_prop_times_chunk(NCCFs, peak_names, custom_window=None, dim='delay', date_dim='dates'):
     '''
     takes xr.Dataset of multiple NCCF stacks and sends each to calc_prop_times which
         requires a single DataArray
@@ -120,30 +128,44 @@ def _calc_prop_times_chunk(NCCFs, peak_names):
     ----------
     NCCFs : xr.Dataset
         dataset of NCCF stacks. should have dimensions ['dates', 'delay']
-    peak_name : string
-        name of peak
-
+    peak_names : string
+        names of peaks
+    custom_window : dict
+        mapping from peak name to slice. If supplied, then peaks is ignored
+    
     Returns
     -------
     prop_times : xr.Dataset
         xr.Dataset with dimensions ['dates']
     '''
 
-    prop_times_d = {}
-    for item in list(NCCFs.keys()):
-        prop_time_peak_name = {}
+    if custom_window is None:
+        prop_times_d = {}
+        for item in list(NCCFs.keys()):
+            prop_time_peak_name = {}
 
-        for peak_name in peak_names:
-            prop_time_peak_name[peak_name] = calc_prop_time(NCCFs[item], peak_name)
+            for peak_name in peak_names:
+                prop_time_peak_name[peak_name] = calc_prop_time(NCCFs[item], peak_name, dim=dim, date_dim=date_dim)
 
-        prop_times_d[item] = xr.concat(list(prop_time_peak_name.values()), dim='peak').assign_coords(
-            {'peak': list(prop_time_peak_name.keys())})
+            prop_times_d[item] = xr.concat(list(prop_time_peak_name.values()), dim='peak').assign_coords(
+                {'peak': list(prop_time_peak_name.keys())})
+    else:
+        prop_times_d = {}
+        for item in list(NCCFs.keys()):
+            prop_time_peak_name = {}
+
+            for key in custom_window.keys():
+                prop_time_peak_name[peak_name] = calc_prop_time(
+                    NCCFs[item], peak_name='custom', peak_slice=custom_window[key], dim=dim, date_dim=date_dim)
+
+            prop_times_d[item] = xr.concat(list(prop_time_peak_name.values()), dim='peak').assign_coords(
+                {'peak': list(prop_time_peak_name.keys())})
           
     prop_times = xr.Dataset(prop_times_d)
 
     return prop_times
 
-def calc_prop_time(NCCFs, peak_name, peak_slice=None, verbose=False, tight=True):
+def calc_prop_time(NCCFs, peak_name, dim='delay', date_dim='dates', peak_slice=None, verbose=False, tight=True):
     '''
     calc_prop_time - calculates the propagation time for a given peak and NCCF stack.
     peak_slices_tight is used for the windowing of the peaks
@@ -156,7 +178,7 @@ def calc_prop_time(NCCFs, peak_name, peak_slice=None, verbose=False, tight=True)
     peak_name : str
         peak name that propagation time is to be calculated.
         if peak_name is custom, then peak_slice is used
-    peak_slice : tuple
+    peak_slice : slice
         start and end times in seconds of custom peak windows.
         only used if peak_name == 'custom'
         
@@ -169,24 +191,24 @@ def calc_prop_time(NCCFs, peak_name, peak_slice=None, verbose=False, tight=True)
         
     '''
     if peak_name == 'custom':
-        peak = NCCFs.loc[:,peak_slice[0]:peak_slice[1]].values
+        peak = NCCFs.loc[:,slice(peak_slice[0], peak_slice[1])].values
         # get index of max
-        idx = NCCFs[:,peak_slice[0]:peak_slice[1]].argmax(dim='delay',skipna=False) + peak_slice[0]
+        idx = NCCFs.loc[:,slice(peak_slice[0], peak_slice[1])].argmax(dim=dim,skipna=False) + peak_slice[0]
     elif tight:
         peak = NCCFs[:,peak_slices_tight[peak_name]].values
         # get index of max
-        idx = NCCFs[:,peak_slices_tight[peak_name]].argmax(dim='delay',skipna=False) + peak_slices_tight[peak_name].start
+        idx = NCCFs[:,peak_slices_tight[peak_name]].argmax(dim=dim,skipna=False) + peak_slices_tight[peak_name].start
     else:
         peak = NCCFs[:,peak_slices[peak_name]].values
         # get index of max
-        idx = NCCFs[:,peak_slices[peak_name]].argmax(dim='delay',skipna=False) + peak_slices[peak_name].start
+        idx = NCCFs[:,peak_slices[peak_name]].argmax(dim=dim,skipna=False) + peak_slices[peak_name].start
 
     # create (52407, 3) array. --> [n-1, n, n+1]
     amplitudes = np.ones((NCCFs.shape[0],3))*np.nan
     indexes = np.ones((NCCFs.shape[0],3))*np.nan
     for k in tqdm(range(NCCFs.shape[0]), disable=(not verbose)):
         amplitudes[k,:] = NCCFs[k,(idx[k].values-1):(idx[k].values+2)].values
-        indexes[k,:] = NCCFs.delay[(idx[k].values-1):(idx[k].values+2)].values
+        indexes[k,:] = NCCFs[dim][(idx[k].values-1):(idx[k].values+2)].values
 
     #QURADRATIC PEAK INTERPOLATION
     p = 1/2*(amplitudes[:,0] - amplitudes[:,2])/(amplitudes[:,0] - 2*amplitudes[:,1] + amplitudes[:,2])
@@ -195,7 +217,7 @@ def calc_prop_time(NCCFs, peak_name, peak_slice=None, verbose=False, tight=True)
     # Calculate interpolated index
     prop_time = indexes[:,1] + p*0.005 # in seconds
     
-    prop_times_x = xr.DataArray(prop_time, dims=['dates'], coords={'dates':NCCFs.dates},  name = f'propagation times for {peak_name}')
+    prop_times_x = xr.DataArray(prop_time, dims=[date_dim], coords={date_dim:NCCFs[date_dim]},  name = f'propagation times for {peak_name}')
     
     return prop_times_x
 

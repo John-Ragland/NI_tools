@@ -12,6 +12,7 @@ import xarray as xr
 import multiprocessing as mp
 from scipy import signal
 import numpy as np
+import xrft
 
 def preprocess_chunk(da, dim, b, a, W=30, Fs=200):
     '''
@@ -76,7 +77,7 @@ def preprocess_chunk(da, dim, b, a, W=30, Fs=200):
     return da_preprocess.transpose(*dims)
 
 
-def preprocess(da, dim, W=30, Fs=200):
+def preprocess(da, dim, W=30, Fs=200, fcs=[1, 90]):
     '''
     preprocess - takes time series and performs pre-processing steps for estimating cross-correlation
 
@@ -96,13 +97,15 @@ def preprocess(da, dim, W=30, Fs=200):
         length of window in seconds
     Fs : float
         sampling rate in Hz 
+    fcs : list
+        cutoff frequencies for bandpass filter
 
     Return
     ------
     data_whiten : np.array
         pre-procesesd data
     '''
-    b, a = signal.butter(4, [0.01, 0.9], btype='bandpass')
+    b, a = signal.butter(4, [fcs[0]/(Fs/2), fcs[1]/(Fs/2)], btype='bandpass')
     data_pp = da.map_blocks(preprocess_chunk, kwargs=(
         {'dim': dim, 'b': b, 'a': a, 'W': W, 'Fs': Fs}), template=da)
     return data_pp
@@ -335,7 +338,7 @@ def compute_NCCF_stack(ds, W=30, Fs=200, compute=True, stack=True):
         return NCCF_stack
 
 
-def compute_MultiElement_NCCF_chunk(da, time_dim='time', W=30, Fs=200):
+def compute_MultiElement_NCCF_chunk(da, time_dim='time', W=30, Fs=200, ref_idx=0):
     '''
     compute_MultiElement_NCCF - takes dataset containing timeseries from two locations
         and calculates an NCCF for each element with the first element
@@ -353,6 +356,9 @@ def compute_MultiElement_NCCF_chunk(da, time_dim='time', W=30, Fs=200):
         size of window in seconds
     Fs : float
         sampling rate in Hz
+    ref_idx : int
+        integer index in 'element' dimension that is correlated with every other element.
+        Defaults to 0, where first element is correlated with every other element
     '''
 
     # move delay dimension to last dimension
@@ -371,7 +377,7 @@ def compute_MultiElement_NCCF_chunk(da, time_dim='time', W=30, Fs=200):
 
     # loop through all elements and compute NCCF
     for k in range(da_rs.shape[0]):
-        R_all_single = np.expand_dims(signal.fftconvolve(da_rs[0, :, :], np.flip(
+        R_all_single = np.expand_dims(signal.fftconvolve(da_rs[ref_idx, :, :], np.flip(
             da_rs[k, :, :], axis=-1), axes=-1, mode='full'), axis=0)
         if k == 0:
             R_all = R_all_single
@@ -381,26 +387,150 @@ def compute_MultiElement_NCCF_chunk(da, time_dim='time', W=30, Fs=200):
 
     NCCF_chunk_unstacked = xr.DataArray(
         R_all, dims=[new_dims_order[0], 'samples', 'delay'])
+    
     NCCF_chunk = NCCF_chunk_unstacked.mean(dim='samples')
-    NCCF_chunk = NCCF_chunk.expand_dims(f'{time_dim}_chunk').transpose(
-        new_dims_order[0], 'time_chunk', 'delay')
+    NCCF_chunk = NCCF_chunk.expand_dims(time_dim).transpose(
+        new_dims_order[0], time_dim, 'delay'
+    )
 
-    print(NCCF_chunk.shape)
+
     return NCCF_chunk
 
 
-def compute_MultiElement_NCCF(da, time_dim='time', W=30, Fs=200):
+def compute_MultiElement_NCCF_PW_chunk(da, time_dim='time', W=30, Fs=200, eta=1, ref_idx=0):
+    '''
+    compute_MultiElement_PW_NCCF_chunk - takes dataset containing timeseries from two locations
+        and calculates an NCCF phase weight for each element with the first element
+       
+    Parameters
+    ----------
+    da : xr.DataArray
+        dataarray with dimensions ['time', 'element']. second dimension does not have to be named element
+    time_dim : str
+        name of delay dimension
+    W : float
+        size of window in seconds
+    Fs : float
+        sampling rate in Hz
+    eta : float
+        phase weight parameter
+    ref_idx : int
+        integer index in 'element' dimension that is correlated with every other element.
+        Defaults to 0, where first element is correlated with every other element
+    '''
+
+    # move delay dimension to last dimension
+    dims = list(da.dims)
+    new_dims_order = dims.copy()
+    new_dims_order.remove(time_dim)
+    new_dims_order = new_dims_order + [time_dim]
+    da_t = da.transpose(*new_dims_order)
+
+    # load single chunk into numpy array
+    da_np = da_t.values
+    shape = da_np.shape
+
+    # reshape into seperate segments of length W
+    da_rs = np.reshape(da_np, (shape[:-1] + (int(shape[-1]/(W*Fs)), W*Fs)))
+
+    # loop through all elements and compute NCCF
+    for k in range(da_rs.shape[0]):
+        R_all_single = np.expand_dims(signal.fftconvolve(da_rs[ref_idx, :, :], np.flip(
+            da_rs[k, :, :], axis=-1), axes=-1, mode='full'), axis=0)
+        if k == 0:
+            R_all = R_all_single
+
+        else:
+            R_all = np.concatenate((R_all, R_all_single), axis=0)
+
+    R_all_pw = np.exp(1j*np.angle(signal.hilbert(R_all, axis=-1)))
+
+    NCCF_chunk_unstacked = xr.DataArray(
+        R_all_pw, dims=[new_dims_order[0], 'samples', 'delay'])
+
+    NCCF_chunk = NCCF_chunk_unstacked.mean(dim='samples')
+
+    NCCF_chunk = NCCF_chunk.expand_dims(time_dim).transpose(
+        new_dims_order[0], time_dim, 'delay'
+    )
+
+    return NCCF_chunk
+
+
+def compute_MultiElement_NCCF(da, time_dim='time', element_dim='distance', W=30, Fs=200, ref_idx=0):
     '''
     compute_MultiElement_NCCF - takes dataarray containing timeseries with multiple elements
         and calculates an NCCF between each element and first element
 
     can only handle a single chunk in the element / distance dimension
+
     Parameters
     ----------
     da : xr.DataArray
         dataarray with dimensions ['time', 'element']. second dimension does not have to be named element
     time_dim : str
         name of time dimension
+    element_dim : str
+        name of element dimension
+    W : float
+        size of window in seconds
+    Fs : float
+        sampling rate in Hz
+    ref_idx : int
+        integer index in 'element' dimension that is correlated with every other element.
+        Defaults to 0, where first element is correlated with every other element
+    '''
+
+    time_idx = da.dims.index(time_dim)
+
+    # move delay dimension to last dimension
+    dims = list(da.dims)
+
+    # get chunk sizes
+    chunk_sizes_all = da.chunksizes
+    chunk_sizes = {}
+    for dim in dims:
+        chunk_sizes[dim] = chunk_sizes_all[dim][0]
+
+    new_dims_order = dims.copy()
+    new_dims_order.remove(time_dim)
+    new_dims_order = new_dims_order + [time_dim]
+    da_t = da.transpose(*new_dims_order)
+
+    n_chunks = len(da.chunks[time_idx])
+
+    dask_temp = dask.array.random.random((da_t.shape[0], n_chunks, 2*W*Fs-1))
+    da_temp = xr.DataArray(dask_temp, dims=[
+                           new_dims_order[0], time_dim, 'delay'], name='multi-element NCCF')
+    
+    # single value chunks in long time
+    new_chunks = {
+        time_dim:1,
+        'delay':int(2*W*Fs-1),
+        element_dim:chunk_sizes[element_dim]
+    }
+    da_temp = da_temp.chunk(new_chunks)
+
+    NCCF_me = da.map_blocks(compute_MultiElement_NCCF_chunk, template=da_temp, kwargs={
+                            'time_dim': time_dim, 'W': W, 'Fs': Fs, 'ref_idx': ref_idx})
+    return NCCF_me
+
+
+def compute_MultiElement_NCCF_PhaseWeight(da, time_dim='time', element_dim='distance', W=30, Fs=200, ref_idx=0):
+    '''
+    compute_MultiElement_NCCF_PhaseWeight - takes dataarray containing timeseries with multiple elements
+        and calculates an NCCF phase weight between each element and first element
+
+    can only handle a single chunk in the element / distance dimension
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        dataarray with dimensions ['time', 'element']. second dimension does not have to be named element
+    time_dim : str
+        name of time dimension
+    element_dim : str
+        name of element dimension
     W : float
         size of window in seconds
     Fs : float
@@ -411,6 +541,13 @@ def compute_MultiElement_NCCF(da, time_dim='time', W=30, Fs=200):
 
     # move delay dimension to last dimension
     dims = list(da.dims)
+
+    # get chunk sizes
+    chunk_sizes_all = da.chunksizes
+    chunk_sizes = {}
+    for dim in dims:
+        chunk_sizes[dim] = chunk_sizes_all[dim][0]
+
     new_dims_order = dims.copy()
     new_dims_order.remove(time_dim)
     new_dims_order = new_dims_order + [time_dim]
@@ -420,12 +557,18 @@ def compute_MultiElement_NCCF(da, time_dim='time', W=30, Fs=200):
 
     dask_temp = dask.array.random.random((da_t.shape[0], n_chunks, 2*W*Fs-1))
     da_temp = xr.DataArray(dask_temp, dims=[
-                           new_dims_order[0], f'{time_dim}_chunk', 'delay'], name='multi-element NCCF')
-    # single value chunks in long time
-    da_temp = da_temp.chunk({f'{time_dim}_chunk': 1})
+                           new_dims_order[0], time_dim, 'delay'], name='multi-element NCCF')
 
-    NCCF_me = da.map_blocks(compute_MultiElement_NCCF_chunk, template=da_temp, kwargs={
-                            'time_dim': time_dim, 'W': W, 'Fs': Fs})
+    # single value chunks in long time
+    new_chunks = {
+        time_dim: 1,
+        'delay': int(2*W*Fs-1),
+        element_dim: chunk_sizes[element_dim]
+    }
+    da_temp = da_temp.chunk(new_chunks)
+
+    NCCF_me = da.map_blocks(compute_MultiElement_NCCF_PW_chunk, template=da_temp, kwargs={
+                            'time_dim': time_dim, 'W': W, 'Fs': Fs, 'ref_idx': ref_idx})
     return NCCF_me
 
 
@@ -513,18 +656,20 @@ def preprocess_archive(da, W=30, Fs=200, tide=False, tide_interp=None):
     return data_whiten
 
 ## Selective Stacking Methods
-def linear_stack(R):
+def linear_stack(R, dim='time'):
     '''
     linear_stack - takes R and linearly stacks (average across time dimension)
 
     Parameters
     ----------
     R : xr.DataArrray
-        un-averaged NCCF stack should have dimensions ['time', 'delay']
+        un-averaged NCCF stack
+    dim : str
+        dimension to stack across
     '''
-    return R.mean('time')
+    return R.mean(dim)
 
-
+# Could be broken
 def selective_stack(R, time_select, delay_select):
     '''
     selective_stack - uses two seperable functions to select which parts of short
@@ -587,3 +732,15 @@ def psd_time_sel(R, wband=(0.01, 0.05), pband=(50, 100)):
         R.isel({'delay': 0}).drop('delay'))*percentile_mask
 
     return time_select
+
+
+def phase_weighted_stack(R):
+    '''
+    phase_weighted_stack - takes R and stacks using phase weighted stacking
+
+    Parameters
+    ----------
+    R : xr.DataArrray
+        un-averaged NCCF stack should have dimensions ['time', 'delay']
+    '''
+    Rf = scipy.fft.fft(R, axis=1)
