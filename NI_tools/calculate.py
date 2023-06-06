@@ -247,7 +247,15 @@ def freq_whiten(data, b, a):
         array of shape [... , segment, time] containing segments of time
         series data to individually whiten. can contain other dimensions prior
         to segment and time, but segment and time must be last two dimensions
-    
+    b : np.array
+        numerator coefficients for filter
+    a : np.array
+        denominator coefficients for filter 
+
+    Returns
+    -------
+    data_whiten : np.array
+        whitened data of same shape as data
     '''
     # window data and compute unit pulse
     win = signal.windows.hann(data.shape[-1])

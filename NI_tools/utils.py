@@ -1,64 +1,84 @@
 '''
-utils.py - general utilities
+utils.py - collection of functions used across NI_tools
 '''
-
-import xarray as xr
 import numpy as np
 from scipy import signal
+import xarray as xr
+import scipy
 
-def xr_filtfilt(ds, dim, b, a, compute=False):
+def freq_whiten(data, dim, b,a):
     '''
-    xr_filtfilt - zero phase linear filter of xarray object
-        designed to be distributed
-        ds must have only one chunk along filter dimension
+    freq_whiten - force magnitude of fft to be filter response magnitude
+        (retains phase information) along a specified dimension of xarray.DataArray
+    chunk in dimension 'dim', must be full dimension for data
 
     Parameters
     ----------
-    ds : xr.Dataset
-        dataset to filter
-    dim : string
-        dimension in ds along which to linearly filter
-    b : list
-        filter numerator coefficents
-    a : list
-        filter denominator coefficients
-    compute : bool
-        whether or not to return task map or computed result
+    data : xarray.DataArray
+        DataArray containing the data to be whitened
+    dim : str
+        Name of the dimension along which to perform the whitening
+    b : np.array
+        numerator coefficients for filter
+    a : np.array
+        denominator coefficients for filter 
 
     Returns
     -------
-    ds_filter : xr.Dataset
-        filtered dataset
+    data_whiten : xarray.DataArray
+        Whitened data with the same dimensions as the input data
     '''
+    return data.map_blocks(__freq_whiten_chunk, kwargs={'dim':dim, 'b':b, 'a':a}, template=data)
 
-    ds_filt = ds.map_blocks(__xr_filtfilt_chunk, args=(b,a, dim), template=ds)
-
-    if compute:
-        return ds_filt.compute()
-    else:
-        return ds_filt
-
-def __xr_filtfilt_chunk(ds, b,a, dim):
+def __freq_whiten_chunk(data, dim, b, a):
     '''
-    single chunk implentation of filtfilt
+    __freq_whiten_chunk - force magnitude of fft to be filter response magnitude
+        (retains phase information) along a specified dimension of xarray.DataArray
+    single chunk operations are done in numpy
 
     Parameters
     ----------
-    ds : xr.Dataset
-    b : list
-        filter coefs
-    a : list
-        filter coefs
-    dim : string
-        dimension to filter over
+    data : xarray.DataArray
+        DataArray containing the data to be whitened
+    dim : str
+        Name of the dimension along which to perform the whitening
+    b : np.array
+        numerator coefficients for filter
+    a : np.array
+        denominator coefficients for filter 
+
+    Returns
+    -------
+    data_whiten : xarray.DataArray
+        Whitened data with the same dimensions as the input data
     '''
+    # Convert the DataArray to a numpy array
+    data_np = data.values
 
-    dim_idx = list(ds.dims.keys()).index(dim)
+    # Get the index of the specified dimension
+    dim_index = data.dims.index(dim)
+    
+    # Window data and compute unit pulse
+    win = signal.windows.hann(data_np.shape[dim_index])
+    pulse = signal.unit_impulse(data_np.shape[dim_index], idx='mid')
+    
+    for k in range(len(data_np.shape) - 1):
+        win = np.expand_dims(win, 0)
+        pulse = np.expand_dims(pulse, 0)
 
-    ds_filt = {}
+    data_win = data_np * win
 
-    for var in list(ds.data_vars):
-        ds_filt[var] = xr.DataArray(signal.filtfilt(b,a,ds[var].values, axis=dim_idx), dims=ds.dims, coords=ds.coords)
+    # Take fft
+    data_f = scipy.fft.fft(data_win, axis=dim_index)
+    data_phase = np.angle(data_f)
 
-    ds_filtx = xr.Dataset(ds_filt)
-    return ds_filtx
+    H = np.abs(scipy.fft.fft(signal.filtfilt(b, a, pulse, axis=-1)))
+
+    # Construct whitened signal
+    data_whiten_f = (np.exp(data_phase * 1j) * np.abs(H) **
+                     2)  # H is squared because of filtfilt
+
+    data_whiten_np = np.real(scipy.fft.ifft(data_whiten_f, axis=dim_index))
+    
+    data_whiten_x = xr.DataArray(data_whiten_np, dims=data.dims, coords=data.coords)
+    return data_whiten_x
