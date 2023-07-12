@@ -14,7 +14,7 @@ import numpy as np
 import xrft
 
 ## Preprocessing functions
-def preprocess(da, dim, W=30, Fs=200, fcs=[1, 90]):
+def preprocess(da, dim, W=30, Fs=200, fcs=[1, 90], include_coords=False):
     '''
     preprocess - takes time series and performs pre-processing steps for estimating cross-correlation
 
@@ -36,6 +36,8 @@ def preprocess(da, dim, W=30, Fs=200, fcs=[1, 90]):
         sampling rate in Hz 
     fcs : list
         cutoff frequencies for bandpass filter
+    include_coords : bool
+        whether to include coordinates in output DataArray
 
     Return
     ------
@@ -47,8 +49,9 @@ def preprocess(da, dim, W=30, Fs=200, fcs=[1, 90]):
     data_pp = da.map_blocks(__preprocess_chunk, kwargs=(
         {'dim': dim, 'b': b, 'a': a, 'W': W, 'Fs': Fs}), template=da)
     
-    template = __preprocess_get_multiindex(da, dim=dim)
-    data_pp = data_pp.reindex_like(template)
+    if include_coords:
+        template = __preprocess_get_multiindex(da, dim=dim)
+        data_pp = data_pp.reindex_like(template)
 
     return data_pp
 
@@ -282,7 +285,7 @@ def freq_whiten(data, b, a):
 
 
 ## Functions to Calculate NCCFs
-def compute_NCCF_stack(ds, dim='time', W=30, Fs=200, compute=True, stack=True):
+def compute_NCCF_stack(ds, dim='time', W=30, Fs=200, fcs=[1,90], compute=True, stack=True):
     '''
     compute_NCCF_stack - takes dataset containing timeseries from two locations
         and calculates an NCCF for every chunk in the time dimensions.
@@ -295,6 +298,8 @@ def compute_NCCF_stack(ds, dim='time', W=30, Fs=200, compute=True, stack=True):
         passed to __NCCF_chunk
     Fs : float
         passed to __NCCF_chunk
+    fcs : list
+        corner frequencies (in Hz) for processing. passed to preprocess
     compute : bool
         whether to return dask task map or computed NCCF stack
     stack : bool
@@ -326,7 +331,7 @@ def compute_NCCF_stack(ds, dim='time', W=30, Fs=200, compute=True, stack=True):
             {'delay': int(2*W*Fs-1), 'time': int(chunk_size/Fs/W)})
 
     NCCF_stack = ds.map_blocks(
-        __NCCF_chunk, template=da_temp, kwargs={'dim': dim, 'stack': stack})
+        __NCCF_chunk, template=da_temp, kwargs={'dim': dim, 'stack': stack, 'fcs':fcs})
     NCCF_stack = NCCF_stack.assign_coords(
         {'delay': np.arange(-W+1/Fs, W, 1/Fs)})
     if compute:
@@ -453,7 +458,7 @@ def compute_NCCF_stack_auto(ds, dim='time', W=30, Fs=200, compute=True, stack=Tr
         return NCCF_stack
 
 
-def __NCCF_chunk(ds, dim, stack=True):
+def __NCCF_chunk(ds, dim, stack=True, fcs=[1, 90]):
     '''
     calculate NCCF for given dataset of time-series
 
@@ -479,7 +484,7 @@ def __NCCF_chunk(ds, dim, stack=True):
         raise Exception('dataset must only have 2 data variabless')
     node1, node2 = list(ds.keys())
 
-    ds_pp = preprocess(ds, dim=dim).unstack()
+    ds_pp = preprocess(ds, dim=dim, fcs=fcs).unstack()
 
     node1_pp = ds_pp[node1].values
     node2_pp = ds_pp[node2].values

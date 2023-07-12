@@ -11,9 +11,65 @@ import pandas as pd
 from scipy import signal, interpolate
 import scipy
 from NI_tools.NI_tools import utils
-from xrsignal import xrsignal
+from xrsignal.xrsignal import xrsignal
 
-def calculate_arrival_times(NCCFs, dim, b,a,  peaks=None, grid_tolerance=1e-13):
+def estimate_at_Rxx(NCCFs, dim, peaks = None):
+    '''
+    estimate_at_Rxx - estimate arrival times using Auto-Correlation Method
+
+    Parameters
+    ----------
+    NCCFs : xarray.DataArray
+        NCCFs to calculate arrival times for
+    dim : str
+        Dimension to calculate arrival times along
+    peaks : dict, optional
+        dictory of peak names and slices of NCCF corresponding to peak
+    '''
+    
+    if peaks is None:
+        peaks = {
+            'dA':slice(-2.5, -1.5),
+            's1b0A':slice(-3.5, -2.5),
+            's1b0B':slice(2.5, 3.5),
+            's2b1A':slice(-5,-4),
+            's2b1B':slice(4,5),
+        }
+
+    arrival_times = {}
+
+    for peak in peaks.keys():
+
+        pass
+    return
+
+def __estimate_at_Rxx_chunk(NCCFs, dim, peaks):
+    '''
+    __estimate_at_Rxx_chunk - estimate the arrival time using Auto-Correlation Method
+
+    Parameters
+    ----------
+    NCCFs : xarray.DataArray
+        NCCFs to calculate arrival times for
+    dim : str
+        Dimension to calculate arrival times along
+    peaks : dict
+        dictory of peak names and slices of NCCF corresponding to peak
+    
+    Returns
+    -------
+    at : xarray.DataArray
+        Estimated arrival time
+    '''
+
+    dim_idx = NCCFs.get_axis_num(dim)
+
+    data = NCCFs.values
+
+    return
+    
+
+def calculate_arrival_times(NCCFs, dim, b=None,a=None,  peaks=None, grid_tolerance=1e-13, second_whiten=False):
     '''
     calculate_arrival_times - calculate arrival times for given NCCF.
     Signal Processing Methods:
@@ -35,6 +91,10 @@ def calculate_arrival_times(NCCFs, dim, b,a,  peaks=None, grid_tolerance=1e-13):
         Numerator of filter
     a : numpy.ndarray   
         Denominator of filter
+    grid_tolerance : float, optional
+        Tolerance for determining if coordinates are uniform grid
+    second_whiten : bool, optional
+        If True, whiten again after hilbert magnitude
 
     Returns
     -------
@@ -57,8 +117,11 @@ def calculate_arrival_times(NCCFs, dim, b,a,  peaks=None, grid_tolerance=1e-13):
         data_slice = NCCFs.sel({dim:peaks[peak]})
 
         # frequency whiten
-        data_w = utils.freq_whiten(data_slice, dim=dim, b=b, a=a)
-
+        if second_whiten:
+            data_w = utils.freq_whiten(data_slice, dim=dim, b=b, a=a)
+        else:
+            data_w = data_slice
+        
         # hilbert magnitude
         data_c = xrsignal.hilbert_mag(data_w, dim=dim)
 
@@ -131,9 +194,7 @@ def __argmax_quadinterp_array(da, dim, grid_tolerance=1e-13):
         raise ValueError('No coordinates in dimension: {}'.format(dim))
 
     # Check if coordinates in dimension dim are uniform grid (up to tolerance)
-    # TODO Something here still isn't working exactly as expected...
     is_uniform_grid = True
-
     diff = np.diff(da.coords[dim])
     if not np.allclose(diff, diff[0], atol=grid_tolerance):
         is_uniform_grid = False
@@ -152,7 +213,7 @@ def __argmax_quadinterp_array(da, dim, grid_tolerance=1e-13):
     for other_dim in other_dims:
         da_nonan = da_nonan.dropna(dim=other_dim)
 
-    beta_idx = da_nonan.isel({dim:slice(1,-1)}).argmax(dim='delay') + 1
+    beta_idx = da_nonan.isel({dim:slice(1,-1)}).argmax(dim=dim) + 1
     alpha_idx = beta_idx-1
     gamma_idx = beta_idx+1
 
@@ -161,7 +222,7 @@ def __argmax_quadinterp_array(da, dim, grid_tolerance=1e-13):
     gamma = da_nonan.isel({dim:gamma_idx})
 
     p = 0.5 * (alpha - gamma) / (alpha - 2 * beta + gamma)
-    p_tot = alpha_idx + p
+    p_tot = beta_idx + p
 
     argmax = da_nonan[dim][0] + p_tot * Ts
     
