@@ -66,8 +66,7 @@ def __estimate_at_Rxx_chunk(NCCFs, dim, peaks):
 
     data = NCCFs.values
 
-    return
-    
+    return 
 
 def calculate_arrival_times(NCCFs, dim, b=None,a=None,  peaks=None, grid_tolerance=1e-13, second_whiten=False):
     '''
@@ -115,18 +114,7 @@ def calculate_arrival_times(NCCFs, dim, b=None,a=None,  peaks=None, grid_toleran
 
     for peak in peaks.keys():
         data_slice = NCCFs.sel({dim:peaks[peak]})
-
-        # frequency whiten
-        if second_whiten:
-            data_w = utils.freq_whiten(data_slice, dim=dim, b=b, a=a)
-        else:
-            data_w = data_slice
-        
-        # hilbert magnitude
-        data_c = xrsignal.hilbert_mag(data_w, dim=dim)
-
-        # argmax_interp
-        arrival_time = argmax_interp(data_c, dim=dim, grid_tolerance=grid_tolerance)
+        arrival_time = calculate_peak_arrival_time(data_slice, dim, b=b, a=a, grid_tolerance=grid_tolerance, second_whiten=second_whiten)
 
         # add to dataset
         arrival_times[peak] = arrival_time
@@ -134,6 +122,46 @@ def calculate_arrival_times(NCCFs, dim, b=None,a=None,  peaks=None, grid_toleran
     arrival_times_x = xr.Dataset(arrival_times)
 
     return arrival_times_x
+
+def calculate_peak_arrival_time(peak, dim, b=None, a=None, grid_tolerance=1e-13, second_whiten=False):
+    '''
+    calculate_peak_arrival_time - calculate arrival time for data array that consists of a single peak
+
+    Parameters
+    ----------
+    peak : xarray.DataArray
+        DataArray containing a single peak
+    dim : str
+        Dimension to calculate arrival times along
+    b : numpy.ndarray
+        Numerator of filter
+    a : numpy.ndarray
+        Denominator of filter
+    grid_tolerance : float, optional
+        Tolerance for determining if coordinates are uniform grid
+    second_whiten : bool, optional
+        If True, whiten again after hilbert magnitude
+    
+    Returns
+    -------
+    arrival_time : xarray.DataArray
+        DataArray with arrival time for peak
+    '''
+
+
+    # frequency whiten
+    if second_whiten:
+        data_w = utils.freq_whiten(peak, dim=dim, b=b, a=a)
+    else:
+        data_w = peak
+    
+    # hilbert magnitude
+    data_c = xrsignal.hilbert_mag(data_w, dim=dim)
+
+    # argmax_interp
+    arrival_time = argmax_interp(data_c, dim=dim, grid_tolerance=grid_tolerance)
+
+    return arrival_time
 
 def argmax_interp(data, dim, grid_tolerance=1e-13):
     '''
@@ -213,6 +241,7 @@ def __argmax_quadinterp_array(da, dim, grid_tolerance=1e-13):
     for other_dim in other_dims:
         da_nonan = da_nonan.dropna(dim=other_dim)
 
+    # Quadratic Peak Interpolation
     beta_idx = da_nonan.isel({dim:slice(1,-1)}).argmax(dim=dim) + 1
     alpha_idx = beta_idx-1
     gamma_idx = beta_idx+1

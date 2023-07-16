@@ -484,7 +484,7 @@ def __NCCF_chunk(ds, dim, stack=True, fcs=[1, 90]):
         raise Exception('dataset must only have 2 data variabless')
     node1, node2 = list(ds.keys())
 
-    ds_pp = preprocess(ds, dim=dim, fcs=fcs).unstack()
+    ds_pp = preprocess(ds, dim=dim, fcs=fcs, include_coords=True).unstack()
 
     node1_pp = ds_pp[node1].values
     node2_pp = ds_pp[node2].values
