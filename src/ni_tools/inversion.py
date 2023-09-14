@@ -10,7 +10,7 @@ import xarray as xr
 import pandas as pd
 from scipy import signal, interpolate
 import scipy
-from NI_tools.NI_tools import utils
+from ni_tools import utils
 import xrsignal
 
 def estimate_at_Rxx(NCCFs, dim, peaks = None):

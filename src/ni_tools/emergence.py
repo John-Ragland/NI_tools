@@ -3,7 +3,7 @@ develop tools to study and compare the emergence of the EGF in the NCCF
 '''
 import xarray as xr
 import numpy as np
-from NI_tools.NI_tools import calculate
+from ni_tools import calculate
 from tqdm import tqdm
 import multiprocessing as mp
 
