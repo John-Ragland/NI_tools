@@ -11,7 +11,7 @@ import pandas as pd
 from scipy import signal, interpolate
 import scipy
 from NI_tools.NI_tools import utils
-from xrsignal.xrsignal import xrsignal
+import xrsignal
 
 def estimate_at_Rxx(NCCFs, dim, peaks = None):
     '''
