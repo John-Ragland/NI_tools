@@ -5,6 +5,7 @@ import numpy as np
 from scipy import signal
 import xarray as xr
 import scipy
+import xrsignal
 
 def freq_whiten(data, dim, b,a):
     '''
@@ -82,3 +83,36 @@ def __freq_whiten_chunk(data, dim, b, a):
     
     data_whiten_x = xr.DataArray(data_whiten_np, dims=data.dims, coords=data.coords)
     return data_whiten_x
+
+def SNR(
+        NCCFs: xr.DataArray,
+        peaks: dict,
+        dim: str='delay',
+        remove_hann: bool=True,
+        noise_window: slice=slice(-10,-5)
+):
+    '''
+    compute SNR for dictionary of peaks.
+    Method to calculate SNR:
+    - calculate noise standard deviation (remove Hann winow from pre-processing)
+    '''
+
+    noise_slice = NCCFs.sel({dim:noise_window})
+    if remove_hann:
+        hann_single = signal.windows.hann(int((NCCFs.sizes[dim]+1)/2))
+        hann = signal.correlate(hann_single, hann_single, mode='full')
+        hann = xr.DataArray(hann/np.max(hann), dims=dim, coords = {dim:NCCFs.coords[dim].values})
+        hann_inv = (1/hann**2)
+    else:
+        hann_inv = xr.DataArray(np.ones(NCCFs.sizes[dim]), dims=dim, coords = {dim:NCCFs.coords[dim].values})
+
+    # remove hann window from noise sample
+    noise_slice = 3*((noise_slice*hann_inv.sel({dim:noise_window})).std(dim=dim))
+
+    snrs = {}
+    # amplitude
+    for peak in peaks:
+        amp = np.abs(xrsignal.hilbert(NCCFs.sel({dim:peaks[peak]}), dim=dim)).max(dim=dim)
+        snrs[peak] = 20*np.log10(amp/noise_slice)
+
+    return xr.Dataset(snrs)

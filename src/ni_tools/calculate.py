@@ -285,7 +285,15 @@ def freq_whiten(data, b, a):
 
 
 ## Functions to Calculate NCCFs
-def compute_NCCF_stack(ds, dim='time', W=30, Fs=200, fcs=[1,90], compute=True, stack=True):
+def compute_NCCF_stack(
+    ds,
+    dim='time',
+    W=30,
+    Fs=200,
+    fcs=[1,90],
+    compute=True,
+    stack=True,
+    stack_type='linear'):
     '''
     compute_NCCF_stack - takes dataset containing timeseries from two locations
         and calculates an NCCF for every chunk in the time dimensions.
@@ -305,11 +313,12 @@ def compute_NCCF_stack(ds, dim='time', W=30, Fs=200, fcs=[1,90], compute=True, s
     stack : bool
         if true, then NCCF is stacked across chunks.
         if false, full NCCF stack is return (no averaging is done)
+    stack_type : str
+        ['linear', 'phase_weighted'] type of stacking to perform
     '''
     if len(ds) != 2:
         raise Exception('dataset must only have 2 data variables')
     node1, node2 = list(ds.keys())
-
     chunk_size = ds.chunks['time'][0]
     # chunk sizes have to be the same for both data variables (i think this is required in xarray too)
 
@@ -331,7 +340,7 @@ def compute_NCCF_stack(ds, dim='time', W=30, Fs=200, fcs=[1,90], compute=True, s
             {'delay': int(2*W*Fs-1), 'time': int(chunk_size/Fs/W)})
 
     NCCF_stack = ds.map_blocks(
-        __NCCF_chunk, template=da_temp, kwargs={'dim': dim, 'stack': stack, 'fcs':fcs})
+        __NCCF_chunk, template=da_temp, kwargs={'dim': dim, 'stack': stack, 'fcs':fcs, 'stack_type':stack_type})
     NCCF_stack = NCCF_stack.assign_coords(
         {'delay': np.arange(-W+1/Fs, W, 1/Fs)})
     if compute:
@@ -458,7 +467,7 @@ def compute_NCCF_stack_auto(ds, dim='time', W=30, Fs=200, compute=True, stack=Tr
         return NCCF_stack
 
 
-def __NCCF_chunk(ds, dim, stack=True, fcs=[1, 90]):
+def __NCCF_chunk(ds, dim, stack=True, fcs=[1, 90], stack_type='linear'):
     '''
     calculate NCCF for given dataset of time-series
 
@@ -493,11 +502,22 @@ def __NCCF_chunk(ds, dim, stack=True, fcs=[1, 90]):
         node2_pp, axis=1), axes=1, mode='full')
    
     if stack:
-        R = np.mean(R_all, axis=0)
-        #tau = np.arange(-W+(1/Fs), W, 1/Fs)
+        if stack_type=='linear':
+            R = np.mean(R_all, axis=0)
+            #tau = np.arange(-W+(1/Fs), W, 1/Fs)
 
-        Rx = xr.DataArray(np.expand_dims(R, 0), dims=['time', 'delay'])
-        return Rx
+            Rx = xr.DataArray(np.expand_dims(R, 0), dims=['time', 'delay'])
+            return Rx
+        elif stack_type=='phase_weighted':
+            R_phase = np.exp(1j*np.angle(signal.hilbert(R_all, axis=0)))
+            phase_weight= np.abs(np.mean(R_phase, axis=0))**2
+
+            R = np.mean(R_all, axis=0)*phase_weight
+
+            Rx = xr.DataArray(np.expand_dims(R, 0), dims=['time', 'delay'])
+            return Rx
+        else:
+            raise ValueError(f'invalid stack_type {stack_type}: must be "linear" or "phase_weighted"')
 
     else:
         Rallx = xr.DataArray(R_all, dims=['time', 'delay'])
